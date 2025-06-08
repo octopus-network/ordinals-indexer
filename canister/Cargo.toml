@@ -1,0 +1,41 @@
+[package]
+name = "ordinals-indexer"
+version = "0.1.0"
+authors = ["julian@oct.network"]
+repository = "https://github.com/octopus-network/ordinals-indexer"
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+bincode = "1.3.3"
+bitcoin = { version = "0.32.5", features = ["rand"] }
+bitcoincore-rpc-json = { version = "0.19.0", default-features = false }
+candid = "0.10"
+chrono = { version = "0.4.19", default-features = false }
+hex = "0.4.3"
+ic-canister-log = "0.2.0"
+ic-canisters-http-types = { git = "https://github.com/dfinity/ic", tag = "release-2024-03-06_23-01+p2p" }
+ic-cdk = "0.12"
+ic-cdk-macros = "0.8"
+ic-cdk-timers = "0.6"
+ic-stable-structures = "0.6"
+ordinals = "0.0.14"
+ordinals-indexer-interface = { path = "../interface" }
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sha2 = "0.10.8"
+thiserror = "1"
+time = "0.3"
+ref-cast = "1.0.23"
+serde_with = "3.7.0"
+brotli = "8.0.1"
+clap = { version = "4.4.2", features = ["derive", "env"] }
+snafu = "0.8.3"
+minicbor = { version = "1.0.0", features = ["alloc", "derive"] }
+ciborium = "0.2.1"
+regex = "1.6.0"
+lazy_static = "1.4.0"
+mp4 = "0.14.0"
+sha3 = "0.10.8"

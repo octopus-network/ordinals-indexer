@@ -1,0 +1,27 @@
+{
+  "dfx": "0.27.0",
+  "canisters": {
+    "ordinals-indexer": {
+      "optimize": "cycles",
+      "gzip": true,
+      "candid": "./canister/ordinals-indexer.did",
+      "package": "ordinals-indexer",
+      "type": "rust"
+    },
+    "ordinals-indexer-testnet": {
+      "optimize": "cycles",
+      "gzip": true,
+      "candid": "./canister/ordinals-indexer.did",
+      "package": "ordinals-indexer",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

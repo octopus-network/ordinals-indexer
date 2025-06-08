@@ -1,0 +1,13 @@
+[package]
+name = "ordinals-indexer-interface"
+description = "Runes Indexer Interface"
+version = "0.1.0"
+authors = ["julian@oct.network"]
+repository = "https://github.com/octopus-network/ordinals-indexer"
+license = "MIT"
+edition = "2024"
+readme = "README.md"
+
+[dependencies]
+candid = "0.10"
+serde = { version = "1.0", features = ["derive"] }

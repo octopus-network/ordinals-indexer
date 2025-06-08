@@ -1,0 +1,10 @@
+type BitcoinNetwork = variant { mainnet; regtest; testnet };
+type Config = record { bitcoin_rpc_url : text; network : BitcoinNetwork };
+type OrdinalsIndexerArgs = variant { Upgrade : opt UpgradeArgs; Init : Config };
+type UpgradeArgs = record {
+  bitcoin_rpc_url : opt text;
+  subscribers : opt vec principal;
+};
+service : (OrdinalsIndexerArgs) -> {
+  get_latest_block : () -> (nat32, text) query;
+}
