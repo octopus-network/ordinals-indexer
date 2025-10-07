@@ -1,10 +1,15 @@
 use self::entry::Entry;
 use super::Result;
 use crate::config::Config;
+use crate::index::entry::SatRange;
 use crate::index::entry::{
-  ChangeRecord, Children, HeaderValue, InscriptionEntry, InscriptionIdValue, InscriptionNumber,
-  OutPointValue, Outpoints, SatPointValue, SequenceNumbers,
+  Children, Cursor, CursorValue, HeaderValue, InscriptionEntry, InscriptionIdValue,
+  InscriptionNumber, OrdinalsChangeRecord, OutPointValue, SatPointValue, SequenceNumbers,
+  StagedBlock, StagedBlockVars, StagedBlockVars2, StagedInputVars, StagedInputVars2,
+  StagedInputVars3, StagedTxVars,
 };
+#[cfg(debug_assertions)]
+use crate::index::utxo_entry::State;
 use crate::index::utxo_entry::UtxoEntryBuf;
 use crate::inscriptions::InscriptionId;
 use crate::logs::{CRITICAL, INFO};
@@ -23,14 +28,13 @@ use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap, StableCell};
 use ordinals::{Height, Pile, Rune, RuneId, SatPoint, SpacedRune, Terms};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::atomic::{self, AtomicBool};
 
 pub mod entry;
 mod lot;
 mod reorg;
 pub mod updater;
-mod utxo_entry;
+pub mod utxo_entry;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 
@@ -45,93 +49,124 @@ thread_local! {
       ).unwrap()
   );
 
-static SAT_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<u64, SequenceNumbers, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1))),
-  )
-);
+  static SAT_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<u64, SequenceNumbers, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1))),
+    )
+  );
 
-static SEQUENCE_NUMBER_TO_CHILDREN: RefCell<StableBTreeMap<u32, Children, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2))),
-  )
-);
+  static SEQUENCE_NUMBER_TO_CHILDREN: RefCell<StableBTreeMap<u32, Children, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2))),
+    )
+  );
 
-static SCRIPT_PUBKEY_TO_OUTPOINT: RefCell<StableBTreeMap<Vec<u8>, Outpoints, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3))),
-  )
-);
+  static HEIGHT_TO_BLOCK_HEADER: RefCell<StableBTreeMap<u32, HeaderValue, Memory>> = RefCell::new(
+      StableBTreeMap::init(
+          MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3))),
+      )
+  );
 
-static HEIGHT_TO_BLOCK_HEADER: RefCell<StableBTreeMap<u32, HeaderValue, Memory>> = RefCell::new(
+  static HEIGHT_TO_LAST_SEQUENCE_NUMBER: RefCell<StableBTreeMap<u32, u32, Memory>> = RefCell::new(
     StableBTreeMap::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(4))),
     )
-);
+  );
 
-static HEIGHT_TO_LAST_SEQUENCE_NUMBER: RefCell<StableBTreeMap<u32, u32, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5))),
-  )
-);
+  static INSCRIPTION_ID_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<InscriptionIdValue, u32, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5))),
+    )
+  );
 
-static HOME_INSCRIPTIONS: RefCell<StableBTreeMap<u32, InscriptionIdValue, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(6))),
-  )
-);
+  static INSCRIPTION_NUMBER_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<InscriptionNumber, u32, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(6))),
+    )
+  );
 
-static INSCRIPTION_ID_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<InscriptionIdValue, u32, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(7))),
-  )
-);
+  static OUTPOINT_TO_UTXO_ENTRY: RefCell<StableBTreeMap<OutPointValue, Vec<u8>, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(7))),
+    )
+  );
 
-static INSCRIPTION_NUMBER_TO_SEQUENCE_NUMBER: RefCell<StableBTreeMap<InscriptionNumber, u32, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(8))),
-  )
-);
+  static SAT_TO_SATPOINT: RefCell<StableBTreeMap<u64, SatPointValue, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(8))),
+    )
+  );
 
-static OUTPOINT_TO_UTXO_ENTRY: RefCell<StableBTreeMap<OutPointValue, UtxoEntryBuf, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(9))),
-  )
-);
+  static SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY: RefCell<StableBTreeMap<u32, InscriptionEntry, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(9))),
+    )
+  );
 
-static SAT_TO_SATPOINT: RefCell<StableBTreeMap<u64, SatPointValue, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(10))),
-  )
-);
+  static SEQUENCE_NUMBER_TO_SATPOINT: RefCell<StableBTreeMap<u32, SatPointValue, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(10))),
+    )
+  );
 
-static SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY: RefCell<StableBTreeMap<u32, InscriptionEntry, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(11))),
-  )
-);
+  static STATISTIC_TO_COUNT: RefCell<StableBTreeMap<u64, u64, Memory>> = RefCell::new(
+    StableBTreeMap::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(11))),
+    )
+  );
 
-static SEQUENCE_NUMBER_TO_SATPOINT: RefCell<StableBTreeMap<u32, SatPointValue, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(12))),
-  )
-);
-
-static STATISTIC_TO_COUNT: RefCell<StableBTreeMap<u64, u64, Memory>> = RefCell::new(
-  StableBTreeMap::init(
-      MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(13))),
-  )
-);
-
-  static HEIGHT_TO_CHANGE_RECORD: RefCell<StableBTreeMap<u32, ChangeRecord, Memory>> = RefCell::new(
+  static HEIGHT_TO_ORDINALS_CHANGE_RECORD: RefCell<StableBTreeMap<u32, OrdinalsChangeRecord, Memory>> = RefCell::new(
       StableBTreeMap::init(
-          MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(14))),
+          MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(12))),
       )
   );
+
+  static BLOCK: RefCell<StableCell<Option<StagedBlock>, Memory>> = RefCell::new(
+      StableCell::init(
+          MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(13))),
+          None
+      ).unwrap()
+  );
+
+  static CURSOR: RefCell<StableCell<CursorValue, Memory>> = RefCell::new(
+      StableCell::init(
+          MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(14))),
+          ((0, 0), (0, 0), (0, 0))
+      ).unwrap()
+  );
+
+  // static STAGED_BLOCK_VARS: RefCell<StableCell<Option<StagedBlockVars>, Memory>> = RefCell::new(
+  //     StableCell::init(
+  //         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(15))),
+  //         None
+  //     ).unwrap()
+  // );
+
+  // static STAGED_TX_VARS: RefCell<StableCell<Option<StagedTxVars>, Memory>> = RefCell::new(
+  //     StableCell::init(
+  //         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(16))),
+  //         None
+  //     ).unwrap()
+  // );
+
+  // static STAGED_INPUT_VARS: RefCell<StableCell<Option<StagedInputVars>, Memory>> = RefCell::new(
+  //     StableCell::init(
+  //         MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(17))),
+  //         None
+  //     ).unwrap()
+  // );
+
+  pub static BREAKPOINT: RefCell<bool> = RefCell::new(false);
+  pub static STAGED_BLOCK_VARS: RefCell<Option<StagedBlockVars>> = RefCell::new(None);
+  pub static STAGED_BLOCK_VARS2: RefCell<Option<StagedBlockVars2>> = RefCell::new(None);
+  pub static STAGED_TX_VARS: RefCell<Option<StagedTxVars>> = RefCell::new(None);
+  pub static STAGED_INPUT_VARS: RefCell<Option<StagedInputVars>> = RefCell::new(None);
+  pub static STAGED_INPUT_VARS2: RefCell<Option<StagedInputVars2>> = RefCell::new(None);
+  pub static STAGED_INPUT_VARS3: RefCell<Option<StagedInputVars3>> = RefCell::new(None);
 }
 
 #[derive(Copy, Clone)]
-pub(crate) enum Statistic {
+pub enum Statistic {
   Schema = 0,
   BlessedInscriptions = 1,
   Commits = 2,
@@ -152,7 +187,7 @@ pub(crate) enum Statistic {
 }
 
 impl Statistic {
-  fn key(self) -> u64 {
+  pub fn key(self) -> u64 {
     self.into()
   }
 }
@@ -223,81 +258,60 @@ pub fn mem_remove_block_header(height: u32) -> Option<HeaderValue> {
 pub fn mem_prune_block_header(height: u32) {
   HEIGHT_TO_BLOCK_HEADER.with(|m| {
     let mut map = m.borrow_mut();
-    let keys_to_remove: Vec<u32> = map
-      .iter()
-      .take_while(|(h, _)| *h <= height)
-      .map(|(h, _)| h)
-      .collect();
-    for key in keys_to_remove {
-      map.remove(&key);
+    while let Some((key, _)) = map.first_key_value() {
+      if key <= height {
+        map.pop_first();
+      } else {
+        break;
+      }
     }
   });
+}
+
+pub fn mem_length_outpoint_to_utxo_entry() -> u64 {
+  OUTPOINT_TO_UTXO_ENTRY.with(|m| m.borrow().len())
 }
 
 pub fn mem_get_outpoint_to_utxo_entry(outpoint_value: OutPointValue) -> Option<UtxoEntryBuf> {
-  OUTPOINT_TO_UTXO_ENTRY.with(|m| m.borrow().get(&outpoint_value))
+  OUTPOINT_TO_UTXO_ENTRY.with(|m| {
+    m.borrow().get(&outpoint_value).map(|vec| UtxoEntryBuf {
+      vec,
+      #[cfg(debug_assertions)]
+      state: State::Valid,
+    })
+  })
 }
 
-pub fn mem_insert_outpoint_to_utxo_entry(
-  outpoint_value: OutPointValue,
-  utxo_entry_buf: UtxoEntryBuf,
-) {
-  OUTPOINT_TO_UTXO_ENTRY.with(|m| m.borrow_mut().insert(outpoint_value, utxo_entry_buf));
+pub fn mem_insert_outpoint_to_utxo_entry(outpoint_value: OutPointValue, utxo_entry_value: Vec<u8>) {
+  OUTPOINT_TO_UTXO_ENTRY.with(|m| m.borrow_mut().insert(outpoint_value, utxo_entry_value));
 }
 
 pub fn mem_remove_outpoint_to_utxo_entry(outpoint_value: OutPointValue) -> Option<UtxoEntryBuf> {
-  OUTPOINT_TO_UTXO_ENTRY.with(|m| m.borrow_mut().remove(&outpoint_value))
-}
-
-pub fn mem_insert_script_pubkey_to_outpoint(script_pubkey: &[u8], outpoint_value: OutPointValue) {
-  let outpoint = OutPoint::load(outpoint_value);
-  SCRIPT_PUBKEY_TO_OUTPOINT.with(|m| {
-    let mut map = m.borrow_mut();
-    let script_pubkey_vec = script_pubkey.to_vec();
-
-    if let Some(mut existing_outpoints) = map.get(&script_pubkey_vec) {
-      if !existing_outpoints.outpoints.contains(&outpoint) {
-        existing_outpoints.outpoints.push(outpoint);
-        map.insert(script_pubkey_vec, existing_outpoints);
-      }
-    } else {
-      let outpoints = Outpoints {
-        outpoints: vec![outpoint],
-      };
-      map.insert(script_pubkey_vec, outpoints);
-    }
-  });
-}
-
-pub fn mem_remove_script_pubkey_to_outpoint(
-  script_pubkey: &[u8],
-  outpoint_value: OutPointValue,
-) -> Option<OutPointValue> {
-  let outpoint = OutPoint::load(outpoint_value);
-  SCRIPT_PUBKEY_TO_OUTPOINT.with(|m| {
-    let mut map = m.borrow_mut();
-    let script_pubkey_vec = script_pubkey.to_vec();
-
-    if let Some(mut existing_outpoints) = map.get(&script_pubkey_vec) {
-      if existing_outpoints.outpoints.contains(&outpoint) {
-        existing_outpoints.outpoints.retain(|o| o != &outpoint);
-        if existing_outpoints.outpoints.is_empty() {
-          map.remove(&script_pubkey_vec);
-        } else {
-          map.insert(script_pubkey_vec, existing_outpoints);
-        }
-        Some(outpoint_value)
-      } else {
-        None
-      }
-    } else {
-      None
-    }
+  OUTPOINT_TO_UTXO_ENTRY.with(|m| {
+    m.borrow_mut()
+      .remove(&outpoint_value)
+      .map(|vec| UtxoEntryBuf {
+        vec,
+        #[cfg(debug_assertions)]
+        state: State::Valid,
+      })
   })
+}
+
+pub fn mem_length_sequence_number_to_satpoint() -> u64 {
+  SEQUENCE_NUMBER_TO_SATPOINT.with(|m| m.borrow().len())
 }
 
 pub fn mem_insert_sequence_number_to_satpoint(sequence_number: u32, satpoint_value: SatPointValue) {
   SEQUENCE_NUMBER_TO_SATPOINT.with(|m| m.borrow_mut().insert(sequence_number, satpoint_value));
+}
+
+pub fn mem_remove_sequence_number_to_satpoint(sequence_number: u32) -> Option<SatPointValue> {
+  SEQUENCE_NUMBER_TO_SATPOINT.with(|m| m.borrow_mut().remove(&sequence_number))
+}
+
+pub fn mem_get_sequence_number_to_satpoint(sequence_number: u32) -> Option<SatPointValue> {
+  SEQUENCE_NUMBER_TO_SATPOINT.with(|m| m.borrow_mut().get(&sequence_number))
 }
 
 pub fn mem_get_statistic_to_count(key: &u64) -> Option<u64> {
@@ -306,6 +320,22 @@ pub fn mem_get_statistic_to_count(key: &u64) -> Option<u64> {
 
 pub fn mem_insert_statistic_to_count(key: &u64, value: &u64) {
   STATISTIC_TO_COUNT.with(|m| m.borrow_mut().insert(*key, *value));
+}
+
+pub fn mem_length_sat_to_satpoint() -> u64 {
+  SAT_TO_SATPOINT.with(|m| m.borrow().len())
+}
+
+pub fn mem_insert_sat_to_satpoint(sat: u64, satpoint_value: SatPointValue) {
+  SAT_TO_SATPOINT.with(|m| m.borrow_mut().insert(sat, satpoint_value));
+}
+
+pub fn mem_remove_sat_to_satpoint(sat: u64) -> Option<SatPointValue> {
+  SAT_TO_SATPOINT.with(|m| m.borrow_mut().remove(&sat))
+}
+
+pub fn mem_length_sequence_number_to_inscription_entry() -> u64 {
+  SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY.with(|m| m.borrow().len())
 }
 
 pub fn mem_get_next_sequence_number() -> u32 {
@@ -318,24 +348,20 @@ pub fn mem_get_next_sequence_number() -> u32 {
   })
 }
 
-pub fn mem_length_home_inscriptions() -> u64 {
-  HOME_INSCRIPTIONS.with(|m| m.borrow().len())
-}
-
-pub fn mem_pop_first_home_inscription() -> Option<(u32, InscriptionIdValue)> {
-  HOME_INSCRIPTIONS.with(|m| m.borrow_mut().pop_first())
-}
-
-pub fn mem_insert_home_inscription(sequence_number: u32, inscription_id: InscriptionIdValue) {
-  HOME_INSCRIPTIONS.with(|m| m.borrow_mut().insert(sequence_number, inscription_id));
-}
-
 pub fn mem_get_sequence_number_to_entry(sequence_number: u32) -> Option<InscriptionEntry> {
   SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY.with(|m| m.borrow().get(&sequence_number))
 }
 
 pub fn mem_insert_sequence_number_to_entry(sequence_number: u32, entry: InscriptionEntry) {
   SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY.with(|m| m.borrow_mut().insert(sequence_number, entry));
+}
+
+pub fn mem_remove_sequence_number_to_entry(sequence_number: u32) -> Option<InscriptionEntry> {
+  SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY.with(|m| m.borrow_mut().remove(&sequence_number))
+}
+
+pub fn mem_length_inscription_id_to_sequence_number() -> u64 {
+  INSCRIPTION_ID_TO_SEQUENCE_NUMBER.with(|m| m.borrow().len())
 }
 
 pub fn mem_get_inscription_id_to_sequence_number(
@@ -352,6 +378,14 @@ pub fn mem_insert_inscription_id_to_sequence_number(
     .with(|m| m.borrow_mut().insert(inscription_id, sequence_number));
 }
 
+pub fn mem_remove_inscription_id_to_sequence_number(inscription_id: InscriptionIdValue) {
+  INSCRIPTION_ID_TO_SEQUENCE_NUMBER.with(|m| m.borrow_mut().remove(&inscription_id));
+}
+
+pub fn mem_length_inscription_number_to_sequence_number() -> u64 {
+  INSCRIPTION_NUMBER_TO_SEQUENCE_NUMBER.with(|m| m.borrow().len())
+}
+
 pub fn mem_get_inscription_number_to_sequence_number(
   inscription_number: InscriptionNumber,
 ) -> Option<u32> {
@@ -366,25 +400,78 @@ pub fn mem_insert_inscription_number_to_sequence_number(
     .with(|m| m.borrow_mut().insert(inscription_number, sequence_number));
 }
 
+pub fn mem_remove_inscription_number_to_sequence_number(inscription_number: InscriptionNumber) {
+  INSCRIPTION_NUMBER_TO_SEQUENCE_NUMBER.with(|m| m.borrow_mut().remove(&inscription_number));
+}
+
+pub fn mem_length_sat_to_sequence_number() -> u64 {
+  SAT_TO_SEQUENCE_NUMBER.with(|m| m.borrow().len())
+}
+
 pub fn mem_insert_sat_to_sequence_number(sat: u64, sequence_number: u32) {
   SAT_TO_SEQUENCE_NUMBER.with(|m| {
     let mut map = m.borrow_mut();
-
-    if let Some(mut seqs) = map.get(&sat) {
-      if !seqs.numbers.contains(&sequence_number) {
-        seqs.numbers.push(sequence_number);
-        map.insert(sat, seqs);
+    if let Some(mut sequence_numbers) = map.get(&sat) {
+      if !sequence_numbers.sequence_numbers.contains(&sequence_number) {
+        sequence_numbers.sequence_numbers.push(sequence_number);
+        map.insert(sat, sequence_numbers);
       }
     } else {
-      let seqs = SequenceNumbers {
-        numbers: vec![sequence_number],
+      let sequence_numbers = SequenceNumbers {
+        sequence_numbers: vec![sequence_number],
       };
-      map.insert(sat, seqs);
+      map.insert(sat, sequence_numbers);
     }
   });
 }
 
+pub fn mem_insert_sat_to_sequence_numbers(sat: u64, sequence_numbers: Vec<u32>) {
+  SAT_TO_SEQUENCE_NUMBER.with(|m| {
+    let mut map = m.borrow_mut();
+    map.insert(sat, SequenceNumbers { sequence_numbers });
+  });
+}
+
+pub fn mem_remove_sat_to_sequence_number(sat: u64, sequence_number: u32) {
+  SAT_TO_SEQUENCE_NUMBER.with(|m| {
+    let mut map = m.borrow_mut();
+
+    if let Some(mut sequence_numbers) = map.get(&sat) {
+      if sequence_numbers.sequence_numbers.contains(&sequence_number) {
+        sequence_numbers
+          .sequence_numbers
+          .retain(|s| *s != sequence_number);
+
+        if sequence_numbers.sequence_numbers.is_empty() {
+          map.remove(&sat);
+        } else {
+          map.insert(sat, sequence_numbers);
+        }
+      }
+    }
+  });
+}
+
+pub fn mem_length_sequence_number_to_children() -> u64 {
+  SEQUENCE_NUMBER_TO_CHILDREN.with(|m| m.borrow().len())
+}
+
 pub fn mem_insert_sequence_number_to_children(
+  parent_sequence_number: u32,
+  child_sequence_numbers: Vec<u32>,
+) {
+  SEQUENCE_NUMBER_TO_CHILDREN.with(|m| {
+    let mut map = m.borrow_mut();
+    map.insert(
+      parent_sequence_number,
+      Children {
+        children: child_sequence_numbers,
+      },
+    );
+  });
+}
+
+pub fn mem_insert_sequence_number_to_child(
   parent_sequence_number: u32,
   child_sequence_number: u32,
 ) {
@@ -404,45 +491,168 @@ pub fn mem_insert_sequence_number_to_children(
   });
 }
 
-pub fn mem_insert_height_to_last_sequence_number(height: u32, sequence_number: u32) {
-  HEIGHT_TO_LAST_SEQUENCE_NUMBER.with(|m| m.borrow_mut().insert(height, sequence_number));
-}
-
-pub fn mem_insert_sat_to_satpoint(sat: u64, satpoint_value: SatPointValue) {
-  SAT_TO_SATPOINT.with(|m| m.borrow_mut().insert(sat, satpoint_value));
-}
-
-pub fn mem_length_change_record() -> u64 {
-  HEIGHT_TO_CHANGE_RECORD.with(|m| m.borrow().len())
-}
-
-pub(crate) fn mem_insert_change_record(height: u32, change_record: ChangeRecord) {
-  HEIGHT_TO_CHANGE_RECORD.with(|m| m.borrow_mut().insert(height, change_record));
-}
-
-pub(crate) fn mem_get_change_record(height: u32) -> Option<ChangeRecord> {
-  HEIGHT_TO_CHANGE_RECORD.with(|m| m.borrow().get(&height))
-}
-
-pub(crate) fn mem_remove_change_record(height: u32) -> Option<ChangeRecord> {
-  HEIGHT_TO_CHANGE_RECORD.with(|m| m.borrow_mut().remove(&height))
-}
-
-pub fn mem_prune_change_record(height: u32) {
-  HEIGHT_TO_CHANGE_RECORD.with(|m| {
+pub fn mem_remove_sequence_number_to_children(
+  parent_sequence_number: u32,
+  child_sequence_number: u32,
+) {
+  SEQUENCE_NUMBER_TO_CHILDREN.with(|m| {
     let mut map = m.borrow_mut();
-    let keys_to_remove: Vec<u32> = map
-      .iter()
-      .take_while(|(h, _)| *h <= height)
-      .map(|(h, _)| h)
-      .collect();
-    for key in keys_to_remove {
-      map.remove(&key);
+
+    if let Some(mut children) = map.get(&parent_sequence_number) {
+      if children.children.contains(&child_sequence_number) {
+        children.children.retain(|s| *s != child_sequence_number);
+
+        if children.children.is_empty() {
+          map.remove(&parent_sequence_number);
+        } else {
+          map.insert(parent_sequence_number, children);
+        }
+      }
     }
   });
 }
 
-pub fn next_block(network: BitcoinNetwork) -> (u32, Option<BlockHash>) {
+pub fn mem_length_height_to_last_sequence_number() -> u64 {
+  HEIGHT_TO_LAST_SEQUENCE_NUMBER.with(|m| m.borrow().len())
+}
+
+pub fn mem_insert_height_to_last_sequence_number(height: u32, sequence_number: u32) {
+  HEIGHT_TO_LAST_SEQUENCE_NUMBER.with(|m| m.borrow_mut().insert(height, sequence_number));
+}
+
+pub fn mem_remove_height_to_last_sequence_number(height: u32) -> Option<u32> {
+  HEIGHT_TO_LAST_SEQUENCE_NUMBER.with(|m| m.borrow_mut().remove(&height))
+}
+
+pub fn mem_length_ordinals_change_record() -> u64 {
+  HEIGHT_TO_ORDINALS_CHANGE_RECORD.with(|m| m.borrow().len())
+}
+
+pub(crate) fn mem_insert_ordinals_change_record(height: u32, change_record: OrdinalsChangeRecord) {
+  HEIGHT_TO_ORDINALS_CHANGE_RECORD.with(|m| m.borrow_mut().insert(height, change_record));
+}
+
+pub(crate) fn mem_get_ordinals_change_record(height: u32) -> Option<OrdinalsChangeRecord> {
+  HEIGHT_TO_ORDINALS_CHANGE_RECORD.with(|m| m.borrow().get(&height))
+}
+
+pub(crate) fn mem_remove_ordinals_change_record(height: u32) -> Option<OrdinalsChangeRecord> {
+  HEIGHT_TO_ORDINALS_CHANGE_RECORD.with(|m| m.borrow_mut().remove(&height))
+}
+
+pub fn mem_prune_ordinals_change_record(height: u32) {
+  HEIGHT_TO_ORDINALS_CHANGE_RECORD.with(|m| {
+    let mut map = m.borrow_mut();
+    while let Some((key, _)) = map.first_key_value() {
+      if key <= height {
+        map.pop_first();
+      } else {
+        break;
+      }
+    }
+  });
+}
+
+pub fn mem_clear_block() {
+  BLOCK.with(|m| m.borrow_mut().set(None)).unwrap();
+}
+
+pub fn mem_insert_block(block: StagedBlock) {
+  BLOCK.with(|m| m.borrow_mut().set(Some(block))).unwrap();
+}
+
+pub fn mem_get_block() -> Option<StagedBlock> {
+  BLOCK.with(|m| m.borrow().get().clone())
+}
+
+pub fn mem_reset_cursor_with_tx_len(tx_len: u64) {
+  CURSOR
+    .with(|m| m.borrow_mut().set(((0, tx_len), (0, 0), (0, 0))))
+    .unwrap();
+}
+
+pub fn mem_set_cursor(cursor: Cursor) {
+  CURSOR.with(|m| m.borrow_mut().set(cursor.store())).unwrap();
+}
+
+pub fn mem_get_cursor() -> Cursor {
+  let value = CURSOR.with(|m| m.borrow().get().clone());
+  Cursor::load(value)
+}
+
+pub fn heap_get_staged_block_vars() -> Option<StagedBlockVars> {
+  STAGED_BLOCK_VARS.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_block_vars(staged_block_vars: StagedBlockVars) {
+  STAGED_BLOCK_VARS.with(|m| *m.borrow_mut() = Some(staged_block_vars));
+}
+
+pub fn heap_reset_staged_block_vars() {
+  STAGED_BLOCK_VARS.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn heap_get_staged_block_vars2() -> Option<StagedBlockVars2> {
+  STAGED_BLOCK_VARS2.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_block_vars2(staged_block_vars: StagedBlockVars2) {
+  STAGED_BLOCK_VARS2.with(|m| *m.borrow_mut() = Some(staged_block_vars));
+}
+
+pub fn heap_reset_staged_block_vars2() {
+  STAGED_BLOCK_VARS2.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn heap_get_staged_tx_vars() -> Option<StagedTxVars> {
+  STAGED_TX_VARS.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_tx_vars(staged_tx_vars: StagedTxVars) {
+  STAGED_TX_VARS.with(|m| *m.borrow_mut() = Some(staged_tx_vars));
+}
+
+pub fn heap_reset_staged_tx_vars() {
+  STAGED_TX_VARS.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn heap_get_staged_input_vars() -> Option<StagedInputVars> {
+  STAGED_INPUT_VARS.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_input_vars(staged_input_vars: StagedInputVars) {
+  STAGED_INPUT_VARS.with(|m| *m.borrow_mut() = Some(staged_input_vars));
+}
+
+pub fn heap_reset_staged_input_vars() {
+  STAGED_INPUT_VARS.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn heap_get_staged_input_vars2() -> Option<StagedInputVars2> {
+  STAGED_INPUT_VARS2.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_input_vars2(staged_input_vars: StagedInputVars2) {
+  STAGED_INPUT_VARS2.with(|m| *m.borrow_mut() = Some(staged_input_vars));
+}
+
+pub fn heap_reset_staged_input_vars2() {
+  STAGED_INPUT_VARS2.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn heap_get_staged_input_vars3() -> Option<StagedInputVars3> {
+  STAGED_INPUT_VARS3.with(|m| m.borrow().clone())
+}
+
+pub fn heap_insert_staged_input_vars3(staged_input_vars: StagedInputVars3) {
+  STAGED_INPUT_VARS3.with(|m| *m.borrow_mut() = Some(staged_input_vars));
+}
+
+pub fn heap_reset_staged_input_vars3() {
+  STAGED_INPUT_VARS3.with(|m| *m.borrow_mut() = None);
+}
+
+pub fn next_block(_network: BitcoinNetwork) -> (u32, Option<BlockHash>) {
   mem_latest_block()
     .map(|(height, prev_blockhash)| (height + 1, Some(prev_blockhash)))
     .unwrap_or((0, None))
@@ -461,7 +671,63 @@ pub fn have_full_utxo_index() -> bool {
   true
 }
 
-pub(crate) struct Index {
+pub fn list(outpoint: OutPoint) -> Option<Vec<(u64, u64)>> {
+  mem_get_outpoint_to_utxo_entry(outpoint.store()).map(|utxo_entry| {
+    utxo_entry
+      .parse(&INDEX)
+      .sat_ranges()
+      .chunks_exact(11)
+      .map(|chunk| SatRange::load(chunk.try_into().unwrap()))
+      .collect::<Vec<(u64, u64)>>()
+  })
+}
+
+pub fn contains_output(output: &OutPoint) -> bool {
+  mem_get_outpoint_to_utxo_entry(output.store()).is_some()
+}
+
+fn inscriptions_on_output(outpoint: OutPoint) -> Result<Option<Vec<(SatPoint, InscriptionId)>>> {
+  let Some(utxo_entry) = mem_get_outpoint_to_utxo_entry(outpoint.store()) else {
+    return Ok(Some(Vec::new()));
+  };
+
+  let mut inscriptions = utxo_entry.parse(&INDEX).parse_inscriptions();
+
+  inscriptions.sort_by_key(|(sequence_number, _)| *sequence_number);
+
+  inscriptions
+    .into_iter()
+    .map(|(sequence_number, offset)| {
+      let entry = mem_get_sequence_number_to_entry(sequence_number).unwrap();
+
+      let satpoint = SatPoint { outpoint, offset };
+
+      Ok((satpoint, entry.id))
+    })
+    .collect::<Result<_>>()
+    .map(Some)
+}
+
+pub fn get_inscriptions_on_output_with_satpoints(
+  outpoint: OutPoint,
+) -> Result<Option<Vec<(SatPoint, InscriptionId)>>> {
+  inscriptions_on_output(outpoint)
+}
+
+pub fn inner_get_inscriptions_for_output(outpoint: OutPoint) -> Result<Option<Vec<InscriptionId>>> {
+  let Some(inscriptions) = get_inscriptions_on_output_with_satpoints(outpoint)? else {
+    return Ok(None);
+  };
+
+  Ok(Some(
+    inscriptions
+      .iter()
+      .map(|(_satpoint, inscription_id)| *inscription_id)
+      .collect(),
+  ))
+}
+
+pub struct Index {
   index_sats: bool,
   index_addresses: bool,
   index_inscriptions: bool,
@@ -469,6 +735,6 @@ pub(crate) struct Index {
 
 const INDEX: Index = Index {
   index_sats: true,
-  index_addresses: true,
+  index_addresses: false,
   index_inscriptions: true,
 };

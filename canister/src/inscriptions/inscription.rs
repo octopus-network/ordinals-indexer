@@ -273,6 +273,7 @@ impl Inscription {
       || matches!(self.media(), Media::Code(_) | Media::Text | Media::Unknown)
   }
 
+  #[allow(unused)]
   pub(crate) fn gallery(&self) -> Vec<InscriptionId> {
     self
       .properties

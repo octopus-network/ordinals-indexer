@@ -94,6 +94,7 @@ impl From<Error> for SnafuError {
 /// by `anyhow::Context::{context, with_context}`. Once the migration is
 /// complete, this trait can be deleted, and `snafu::ResultExt` used directly.
 pub(crate) trait ResultExt<T, E>: Sized {
+  #[allow(unused)]
   fn snafu_context<C, E2>(self, context: C) -> Result<T, E2>
   where
     C: snafu::IntoError<E2, Source = E>,

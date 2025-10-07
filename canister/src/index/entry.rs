@@ -1,8 +1,15 @@
 use super::*;
+use crate::index::updater::BlockData;
+use crate::index::updater::inscription_updater::Flotsam;
+use crate::inscriptions::envelope::Envelope;
+use crate::inscriptions::inscription::Inscription;
 use ic_stable_structures::storable::{Bound, Storable};
 use ordinals::Sat;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::iter::Peekable;
+use std::vec::IntoIter;
 
 #[derive(Debug, PartialEq)]
 pub enum MintError {
@@ -23,7 +30,7 @@ impl Display for MintError {
   }
 }
 
-pub(crate) trait Entry: Sized {
+pub trait Entry: Sized {
   type Value;
 
   fn load(value: Self::Value) -> Self;
@@ -540,59 +547,51 @@ impl Entry for Txid {
   }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuneBalance {
-  pub rune_id: RuneId,
-  pub balance: u128,
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct OrdinalsChangeRecord {
+  pub added_sat_to_seq: Vec<(u64, u32)>,
+  pub added_seq_to_children: Vec<(u32, u32)>,
+  pub added_inscription_id: Vec<InscriptionId>,
+  pub added_inscription_number: Vec<InscriptionNumber>,
+  pub added_outpoint: Vec<OutPoint>,
+  pub removed_outpoint: Vec<(OutPoint, UtxoEntryBuf)>,
+  pub added_sat_to_satpoint: Vec<u64>,
+  pub added_seq_to_inscription: Vec<u32>,
+  pub added_seq_to_satpoint: Vec<u32>,
+  pub lost_sats: u64,
+  pub cursed_inscriptions: u64,
+  pub blessed_inscriptions: u64,
+  pub unbound_inscriptions: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuneBalances {
-  pub balances: Vec<RuneBalance>,
-}
-
-impl Storable for RuneBalances {
-  fn to_bytes(&self) -> Cow<[u8]> {
-    let vec = bincode::serialize(self).unwrap();
-    Cow::Owned(vec)
-  }
-
-  fn from_bytes(bytes: Cow<[u8]>) -> Self {
-    bincode::deserialize(&bytes).unwrap()
-  }
-
-  const BOUND: Bound = Bound::Unbounded;
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChangeRecord {
-  pub removed_outpoints: Vec<(OutPoint, RuneBalances, u32)>,
-  pub added_outpoints: Vec<OutPoint>,
-  pub burned: HashMap<RuneId, u128>,
-  pub mints: HashMap<RuneId, u128>,
-  pub added_runes: Vec<(Rune, RuneId, Txid)>,
-}
-
-impl ChangeRecord {
+impl OrdinalsChangeRecord {
   pub fn new() -> Self {
     Self {
-      removed_outpoints: Vec::new(),
-      added_outpoints: Vec::new(),
-      burned: HashMap::new(),
-      mints: HashMap::new(),
-      added_runes: Vec::new(),
+      added_sat_to_seq: Vec::new(),
+      added_seq_to_children: Vec::new(),
+      added_inscription_id: Vec::new(),
+      added_inscription_number: Vec::new(),
+      added_outpoint: Vec::new(),
+      removed_outpoint: Vec::new(),
+      added_sat_to_satpoint: Vec::new(),
+      added_seq_to_inscription: Vec::new(),
+      added_seq_to_satpoint: Vec::new(),
+      lost_sats: 0,
+      cursed_inscriptions: 0,
+      blessed_inscriptions: 0,
+      unbound_inscriptions: 0,
     }
   }
 }
 
-impl Storable for ChangeRecord {
+impl Storable for OrdinalsChangeRecord {
   fn to_bytes(&self) -> Cow<[u8]> {
-    let vec = bincode::serialize(self).unwrap();
+    let vec = postcard::to_allocvec(self).unwrap();
     Cow::Owned(vec)
   }
 
   fn from_bytes(bytes: Cow<[u8]>) -> Self {
-    bincode::deserialize(&bytes).unwrap()
+    postcard::from_bytes(&bytes).unwrap()
   }
 
   const BOUND: Bound = Bound::Unbounded;
@@ -600,7 +599,7 @@ impl Storable for ChangeRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SequenceNumbers {
-  pub numbers: Vec<u32>,
+  pub sequence_numbers: Vec<u32>,
 }
 
 impl Storable for SequenceNumbers {
@@ -634,24 +633,6 @@ impl Storable for Children {
   const BOUND: Bound = Bound::Unbounded;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Outpoints {
-  pub outpoints: Vec<OutPoint>,
-}
-
-impl Storable for Outpoints {
-  fn to_bytes(&self) -> Cow<[u8]> {
-    let vec = bincode::serialize(self).unwrap();
-    Cow::Owned(vec)
-  }
-
-  fn from_bytes(bytes: Cow<[u8]>) -> Self {
-    bincode::deserialize(&bytes).unwrap()
-  }
-
-  const BOUND: Bound = Bound::Unbounded;
-}
-
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InscriptionNumber(pub i32);
 
@@ -666,4 +647,168 @@ impl Storable for InscriptionNumber {
   }
 
   const BOUND: Bound = Bound::Unbounded;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagedBlock {
+  pub hash: BlockHash,
+  pub block_data: BlockData,
+}
+
+impl Storable for StagedBlock {
+  fn to_bytes(&self) -> Cow<[u8]> {
+    let vec = bincode::serialize(self).unwrap();
+    Cow::Owned(vec)
+  }
+
+  fn from_bytes(bytes: Cow<[u8]>) -> Self {
+    bincode::deserialize(&bytes).unwrap()
+  }
+
+  const BOUND: Bound = Bound::Unbounded;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cursor {
+  pub tx_cursor: u64,
+  pub tx_len: u64,
+  pub input_cursor: u64,
+  pub input_len: u64,
+  pub inscription_cursor: u64,
+  pub inscription_len: u64,
+}
+
+impl fmt::Display for Cursor {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "tx: {}/{}, input: {}/{}, inscription: {}/{}",
+      self.tx_cursor,
+      self.tx_len,
+      self.input_cursor,
+      self.input_len,
+      self.inscription_cursor,
+      self.inscription_len
+    )
+  }
+}
+
+pub(super) type CursorValue = ((u64, u64), (u64, u64), (u64, u64));
+
+impl Entry for Cursor {
+  type Value = CursorValue;
+
+  fn load(value: Self::Value) -> Self {
+    let ((tx_cursor, tx_len), (input_cursor, input_len), (inscription_cursor, inscription_len)) =
+      value;
+    Self {
+      tx_cursor,
+      tx_len,
+      input_cursor,
+      input_len,
+      inscription_cursor,
+      inscription_len,
+    }
+  }
+
+  fn store(self) -> Self::Value {
+    (
+      (self.tx_cursor, self.tx_len),
+      (self.input_cursor, self.input_len),
+      (self.inscription_cursor, self.inscription_len),
+    )
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum StagedState {
+  Index,
+  Commit,
+  Save,
+  Prune,
+  Cleanup,
+  End,
+}
+
+impl Default for StagedState {
+  fn default() -> Self {
+    StagedState::Index
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StagedBlockVars {
+  pub utxo_cache: BTreeMap<OutPoint, UtxoEntryBuf>,
+  pub ordinals_change_record: OrdinalsChangeRecord,
+  pub pending_commit_outpoint: Option<OutPoint>,
+  pub pending_commit_inscriptions: Vec<(u32, u64)>,
+  pub state: StagedState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StagedBlockVars2 {
+  pub flotsam: Vec<Flotsam>,
+  pub reward: u64,
+  pub coinbase_inputs: Vec<u8>,
+  pub lost_sat_ranges: Vec<u8>,
+}
+
+// impl Storable for StagedBlockVars {
+//   fn to_bytes(&self) -> Cow<[u8]> {
+//     let vec = bincode::serialize(self).unwrap();
+//     Cow::Owned(vec)
+//   }
+//
+//   fn from_bytes(bytes: Cow<[u8]>) -> Self {
+//     bincode::deserialize(&bytes).unwrap()
+//   }
+//
+//   const BOUND: Bound = Bound::Unbounded;
+// }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagedTxVars {
+  pub input_utxo_entries: Vec<UtxoEntryBuf>,
+  pub output_utxo_entries: Vec<UtxoEntryBuf>,
+  pub input_sat_ranges: Option<Vec<Vec<u8>>>,
+}
+
+impl Storable for StagedTxVars {
+  fn to_bytes(&self) -> Cow<[u8]> {
+    let vec = bincode::serialize(self).unwrap();
+    Cow::Owned(vec)
+  }
+
+  fn from_bytes(bytes: Cow<[u8]>) -> Self {
+    bincode::deserialize(&bytes).unwrap()
+  }
+
+  const BOUND: Bound = Bound::Unbounded;
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedInputVars {
+  pub floating_inscriptions: Vec<Flotsam>,
+  pub id_counter: u32,
+  pub inscribed_offsets: BTreeMap<u64, (InscriptionId, i32)>,
+  pub total_input_value: u64,
+  pub envelopes: Peekable<IntoIter<Envelope<Inscription>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedInputVars2 {
+  pub new_locations: Vec<(SatPoint, Flotsam, bool)>,
+  pub output_value: u64,
+  pub total_input_value: u64,
+  pub output_cursor: usize,
+  pub inscriptions: Peekable<IntoIter<Flotsam>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedInputVars3 {
+  pub new_locations: Vec<(SatPoint, Flotsam, bool)>,
+  pub output_value: u64,
+  pub total_input_value: u64,
+  pub inscriptions: Peekable<IntoIter<Flotsam>>,
+  pub new_locations_cursor: usize,
 }

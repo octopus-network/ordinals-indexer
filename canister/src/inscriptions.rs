@@ -28,8 +28,8 @@ use std::fs::File;
 use std::mem;
 use std::path::Path;
 
-mod envelope;
-mod inscription;
+pub mod envelope;
+pub mod inscription;
 pub(crate) mod inscription_id;
 pub(crate) mod media;
 mod tag;

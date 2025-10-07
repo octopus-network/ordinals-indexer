@@ -1,9 +1,8 @@
 use super::Result;
-use crate::logs::{DEBUG, ERROR};
+use crate::logs::{DEBUG, ERROR, INFO};
 use anyhow::anyhow;
+use bitcoin::BlockHash;
 use bitcoin::{Block, consensus::encode};
-use bitcoin::{BlockHash, Txid};
-use bitcoincore_rpc_json::{GetBlockHeaderResult, GetRawTransactionResult};
 use ic_canister_log::log;
 use ic_cdk::api::management_canister::http_request::*;
 use serde::{Deserialize, Serialize};
@@ -251,6 +250,13 @@ async fn inner_get_block(
 }
 
 pub(crate) async fn get_block(hash: BlockHash) -> Result<crate::index::updater::BlockData> {
+  if let Some(staged_block) = crate::index::mem_get_block() {
+    if staged_block.hash == hash {
+      log!(INFO, "use staged block {}", hash.to_string());
+      return Ok(staged_block.block_data);
+    }
+  }
+
   let config = crate::index::mem_get_config();
   let block = inner_get_block(
     &config.bitcoin_rpc_url,
@@ -264,81 +270,20 @@ pub(crate) async fn get_block(hash: BlockHash) -> Result<crate::index::updater::
     return Err(anyhow!("wrong block hash: {}", hash.to_string()));
   }
 
-  block
+  let block_data = block
     .check_merkle_root()
     .then(|| crate::index::updater::BlockData::from(block))
-    .ok_or(anyhow!("wrong block merkle root: {}", hash.to_string()))
-}
+    .ok_or(anyhow!("wrong block merkle root: {}", hash.to_string()))?;
 
-async fn inner_get_raw_transaction_info(
-  url: &str,
-  max_response_bytes: u64,
-  subnet_nodes: u64,
-  txid: &Txid,
-  block_hash: Option<&BlockHash>,
-) -> Result<GetRawTransactionResult> {
-  let args = [
-    into_json(txid)?,
-    into_json(true)?,
-    opt_into_json(block_hash)?,
-  ];
-  let res: GetRawTransactionResult = make_rpc(
-    url,
-    "getrawtransaction",
-    args.to_vec(),
-    max_response_bytes,
-    subnet_nodes,
-  )
-  .await?;
-  Ok(res)
-}
-
-// 1885 ~ 3522 bytes
-pub(crate) async fn get_raw_transaction_info(
-  txid: &Txid,
-  block_hash: Option<&BlockHash>,
-) -> Result<GetRawTransactionResult> {
-  let config = crate::index::mem_get_config();
-  inner_get_raw_transaction_info(
-    &config.bitcoin_rpc_url,
-    4_096,
-    config.get_subnet_nodes(),
-    txid,
-    block_hash,
-  )
-  .await
-}
-
-async fn inner_get_block_header_info(
-  url: &str,
-  max_response_bytes: u64,
-  subnet_nodes: u64,
-  hash: &bitcoin::BlockHash,
-) -> Result<GetBlockHeaderResult> {
-  let args = [into_json(hash)?, true.into()];
-  let res: GetBlockHeaderResult = make_rpc(
-    url,
-    "getblockheader",
-    args.to_vec(),
-    max_response_bytes,
-    subnet_nodes,
-  )
-  .await?;
-  Ok(res)
-}
-
-// 640 ~ 644 bytes
-pub(crate) async fn get_block_header_info(
-  hash: &bitcoin::BlockHash,
-) -> Result<GetBlockHeaderResult> {
-  let config = crate::index::mem_get_config();
-  inner_get_block_header_info(
-    &config.bitcoin_rpc_url,
-    1_024,
-    config.get_subnet_nodes(),
+  log!(INFO, "add new staged block {}", hash.to_string());
+  crate::index::mem_insert_block(crate::index::entry::StagedBlock {
     hash,
-  )
-  .await
+    block_data: block_data.clone(),
+  });
+
+  crate::index::mem_reset_cursor_with_tx_len(block_data.txdata.len() as u64);
+
+  Ok(block_data)
 }
 
 async fn inner_get_block_hash(
@@ -376,15 +321,4 @@ where
   T: serde::ser::Serialize,
 {
   Ok(serde_json::to_value(val)?)
-}
-
-/// Shorthand for converting an Option into an Option<serde_json::Value>.
-fn opt_into_json<T>(opt: Option<T>) -> Result<serde_json::Value>
-where
-  T: serde::ser::Serialize,
-{
-  match opt {
-    Some(val) => Ok(into_json(val)?),
-    None => Ok(serde_json::Value::Null),
-  }
 }

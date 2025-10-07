@@ -10,9 +10,7 @@ use {
   std::ops::Deref,
 };
 
-use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 
 enum Sats<'a> {
   Ranges(&'a [u8]),
@@ -190,22 +188,9 @@ impl<'a> ParsedUtxoEntry<'a> {
   }
 }
 
-impl Storable for UtxoEntryBuf {
-  fn to_bytes(&self) -> Cow<[u8]> {
-    let vec = bincode::serialize(self).unwrap();
-    Cow::Owned(vec)
-  }
-
-  fn from_bytes(bytes: Cow<[u8]>) -> Self {
-    bincode::deserialize(&bytes).unwrap()
-  }
-
-  const BOUND: Bound = Bound::Unbounded;
-}
-
 #[cfg(debug_assertions)]
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize, Clone)]
-enum State {
+pub enum State {
   NeedSats,
   NeedScriptPubkey,
   Valid,
@@ -213,9 +198,9 @@ enum State {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UtxoEntryBuf {
-  vec: Vec<u8>,
+  pub vec: Vec<u8>,
   #[cfg(debug_assertions)]
-  state: State,
+  pub state: State,
 }
 
 impl UtxoEntryBuf {

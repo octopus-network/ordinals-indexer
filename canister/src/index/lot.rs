@@ -13,6 +13,7 @@ impl Lot {
   #[cfg(test)]
   const MAX: Self = Self(u128::MAX);
 
+  #[allow(unused)]
   pub(super) fn n(self) -> u128 {
     self.0
   }

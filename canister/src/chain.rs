@@ -25,10 +25,12 @@ pub enum Chain {
 }
 
 impl Chain {
+  #[allow(unused)]
   pub(crate) fn network(self) -> Network {
     self.into()
   }
 
+  #[allow(unused)]
   pub(crate) fn bech32_hrp(self) -> KnownHrp {
     match self {
       Self::Mainnet => KnownHrp::Mainnet,
@@ -37,6 +39,7 @@ impl Chain {
     }
   }
 
+  #[allow(unused)]
   pub(crate) fn default_rpc_port(self) -> u16 {
     match self {
       Self::Mainnet => 8332,
@@ -64,6 +67,7 @@ impl Chain {
     }
   }
 
+  #[allow(unused)]
   pub(crate) fn first_rune_height(self) -> u32 {
     Rune::first_rune_height(self.into())
   }
@@ -78,10 +82,12 @@ impl Chain {
     }
   }
 
+  #[allow(unused)]
   pub(crate) fn genesis_block(self) -> Block {
     bitcoin::blockdata::constants::genesis_block(self.network())
   }
 
+  #[allow(unused)]
   pub(crate) fn genesis_coinbase_outpoint(self) -> OutPoint {
     OutPoint {
       txid: self.genesis_block().coinbase().unwrap().compute_txid(),
@@ -89,10 +95,12 @@ impl Chain {
     }
   }
 
+  #[allow(unused)]
   pub(crate) fn address_from_script(self, script: &Script) -> Result<Address, SnafuError> {
     Address::from_script(script, self.network()).snafu_context(error::AddressConversion)
   }
 
+  #[allow(unused)]
   pub(crate) fn join_with_data_dir(self, data_dir: impl AsRef<Path>) -> PathBuf {
     match self {
       Self::Mainnet => data_dir.as_ref().to_owned(),

@@ -1,3 +1,5 @@
+use crate::index::Statistic;
+use crate::index::entry::Entry;
 use crate::index::{CRITICAL, INFO};
 use bitcoin::block::BlockHash;
 use ic_canister_log::log;
@@ -103,57 +105,77 @@ impl Reorg {
 
     for h in (height - depth + 1..height).rev() {
       log!(INFO, "rolling back change record at height {h}");
-      if let Some(change_record) = crate::index::mem_get_change_record(h) {
+      if let Some(change_record) = crate::index::mem_get_ordinals_change_record(h) {
         change_record
-          .removed_outpoints
+          .added_sat_to_seq
           .iter()
-          .for_each(|(outpoint, rune_balances, height)| {
-            // crate::index::mem_insert_outpoint_to_rune_balances(
-            //   outpoint.store(),
-            //   rune_balances.clone(),
-            // );
-            // crate::index::mem_insert_outpoint_to_height(outpoint.store(), *height);
+          .for_each(|(sat, seq)| {
+            crate::index::mem_remove_sat_to_sequence_number(*sat, *seq);
           });
-        change_record.added_outpoints.iter().for_each(|outpoint| {
-          // crate::index::mem_remove_outpoint_to_rune_balances(outpoint.store());
-          // crate::index::mem_remove_outpoint_to_height(outpoint.store());
-        });
-        change_record.burned.iter().for_each(|(rune_id, amount)| {
-          // let mut entry = crate::index::mem_get_rune_id_to_rune_entry(rune_id.store()).unwrap();
-          // entry.burned = *amount;
-          // crate::index::mem_insert_rune_id_to_rune_entry(rune_id.store(), entry);
-          log!(
-            INFO,
-            "resetting burned for rune_id: {} to {}",
-            rune_id,
-            amount
-          );
-        });
-        change_record.mints.iter().for_each(|(rune_id, amount)| {
-          // let mut entry = crate::index::mem_get_rune_id_to_rune_entry(rune_id.store()).unwrap();
-          // entry.mints = *amount;
-          // crate::index::mem_insert_rune_id_to_rune_entry(rune_id.store(), entry);
-          // log!(
-          //   INFO,
-          //   "resetting mints for rune_id: {} to {}",
-          //   rune_id,
-          //   amount
-          // );
+        change_record
+          .added_seq_to_children
+          .iter()
+          .for_each(|(seq, child)| {
+            crate::index::mem_remove_sequence_number_to_children(*seq, *child);
+          });
+        change_record
+          .added_inscription_id
+          .iter()
+          .for_each(|inscription_id| {
+            crate::index::mem_remove_inscription_id_to_sequence_number(inscription_id.store());
+          });
+        change_record
+          .added_inscription_number
+          .iter()
+          .for_each(|inscription_number| {
+            crate::index::mem_remove_inscription_number_to_sequence_number(
+              inscription_number.clone(),
+            );
+          });
+        change_record.added_outpoint.iter().for_each(|outpoint| {
+          crate::index::mem_remove_outpoint_to_utxo_entry(outpoint.store());
         });
         change_record
-          .added_runes
+          .removed_outpoint
           .iter()
-          .for_each(|(rune, rune_id, txid)| {
-            // crate::index::mem_remove_rune_to_rune_id(rune.store());
-            // crate::index::mem_remove_rune_id_to_rune_entry(rune_id.store());
-            // crate::index::mem_remove_transaction_id_to_rune(txid.store());
-            log!(INFO, "removing rune_id: {}", rune_id);
+          .for_each(|(outpoint, entry_buf)| {
+            crate::index::mem_insert_outpoint_to_utxo_entry(
+              outpoint.store(),
+              entry_buf.vec.clone(),
+            );
           });
+        change_record.added_sat_to_satpoint.iter().for_each(|sat| {
+          crate::index::mem_remove_sat_to_satpoint(*sat);
+        });
+        change_record
+          .added_seq_to_inscription
+          .iter()
+          .for_each(|seq| {
+            crate::index::mem_remove_sequence_number_to_entry(*seq);
+          });
+        change_record.added_seq_to_satpoint.iter().for_each(|seq| {
+          crate::index::mem_remove_sequence_number_to_satpoint(*seq);
+        });
+        crate::index::mem_insert_statistic_to_count(
+          &Statistic::LostSats.key(),
+          &change_record.lost_sats,
+        );
+        crate::index::mem_insert_statistic_to_count(
+          &Statistic::CursedInscriptions.key(),
+          &change_record.cursed_inscriptions,
+        );
+        crate::index::mem_insert_statistic_to_count(
+          &Statistic::BlessedInscriptions.key(),
+          &change_record.blessed_inscriptions,
+        );
+        crate::index::mem_insert_statistic_to_count(
+          &Statistic::UnboundInscriptions.key(),
+          &change_record.unbound_inscriptions,
+        );
       }
-      // crate::index::mem_remove_change_record(h);
-      // crate::index::mem_remove_statistic_runes(h);
-      // crate::index::mem_remove_statistic_reserved_runes(h);
-      // crate::index::mem_remove_block_header(h);
+      crate::index::mem_remove_height_to_last_sequence_number(h);
+      crate::index::mem_remove_ordinals_change_record(h);
+      crate::index::mem_remove_block_header(h);
     }
 
     log!(
@@ -169,11 +191,9 @@ impl Reorg {
   pub(crate) fn prune_change_record(network: BitcoinNetwork, height: u32) {
     if height >= get_max_recoverable_reorg_depth(network) {
       let h = height - get_max_recoverable_reorg_depth(network);
-      log!(INFO, "clearing change record at height {h}");
-      // crate::index::mem_prune_change_record(h);
-      // crate::index::mem_prune_statistic_runes(h);
-      // crate::index::mem_prune_statistic_reserved_runes(h);
-      // crate::index::mem_prune_block_header(h);
+      log!(INFO, "clearing change record {h} at height {height}");
+      crate::index::mem_prune_ordinals_change_record(h);
+      crate::index::mem_prune_block_header(h);
     }
   }
 }
