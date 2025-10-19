@@ -122,7 +122,7 @@ impl<'a> InscriptionUpdater<'a> {
 
       if transferred_inscriptions.is_empty() {
         let counter = ic_cdk::api::instruction_counter();
-        if counter > self.instruction_counter + 30_000_000_000 {
+        if counter > self.instruction_counter + 27_000_000_000 {
           self.cursor.tx_cursor = if tx_offset == 0 {
             self.cursor.tx_len - 1
           } else {
@@ -163,7 +163,7 @@ impl<'a> InscriptionUpdater<'a> {
         .skip(self.cursor.inscription_cursor as usize)
       {
         let counter = ic_cdk::api::instruction_counter();
-        if counter > self.instruction_counter + 30_000_000_000 {
+        if counter > self.instruction_counter + 27_000_000_000 {
           self.cursor.tx_cursor = if tx_offset == 0 {
             self.cursor.tx_len - 1
           } else {
@@ -407,7 +407,7 @@ impl<'a> InscriptionUpdater<'a> {
         }
 
         let counter = ic_cdk::api::instruction_counter();
-        if counter > self.instruction_counter + 30_000_000_000 {
+        if counter > self.instruction_counter + 27_000_000_000 {
           self.cursor.tx_cursor = if tx_offset == 0 {
             self.cursor.tx_len - 1
           } else {
@@ -478,7 +478,7 @@ impl<'a> InscriptionUpdater<'a> {
       new_locations.iter().enumerate().skip(new_locations_cursor)
     {
       let counter = ic_cdk::api::instruction_counter();
-      if counter > self.instruction_counter + 30_000_000_000 {
+      if counter > self.instruction_counter + 27_000_000_000 {
         self.cursor.tx_cursor = if tx_offset == 0 {
           self.cursor.tx_len - 1
         } else {

@@ -52,7 +52,8 @@ pub fn update_index(network: BitcoinNetwork, next_state: StagedState) -> Result 
       let (height, index_prev_blockhash) = crate::index::next_block(network);
 
       // Perform one round of indexing.
-      let result = run_indexing_round(network, height, index_prev_blockhash, start).await;
+      let result =
+        run_indexing_round(network, height, index_prev_blockhash, start, next_state).await;
 
       match result {
         Ok(state) => {
@@ -91,65 +92,96 @@ async fn run_indexing_round(
   height: u32,
   index_prev_blockhash: Option<BlockHash>,
   start_time: u64,
+  next_state: StagedState,
 ) -> Result<StagedState> {
-  // Step 1: Get the block hash for the given height.
-  let block_hash = match crate::bitcoin_api::get_block_hash(network, height).await {
-    Ok(Some(hash)) => hash,
-    Ok(None) => return Ok(StagedState::End), // No new block yet, reschedule for later.
-    Err(e) => {
-      let message = format!("failed to get_block_hash at height {}: {:?}", height, e);
-      // Log only new error messages to avoid spam.
-      let is_new_message = CRITICAL.with_borrow(|sink| {
-        sink
-          .iter()
-          .last()
-          .map_or(true, |entry| entry.message != message)
-      });
-      if is_new_message {
-        log!(CRITICAL, "{}", message);
-      }
-      return Ok(StagedState::End); // Assumed transient error, reschedule.
-    }
-  };
+  let block;
 
-  // Step 2: Fetch the full block data.
-  let block = match crate::rpc::get_block(block_hash).await {
-    Ok(block) => block,
-    Err(e) => {
+  // If next_state is not End and not Index, it means the previous block is in the middle of processing
+  // (Commit, Save, Prune, or Cleanup state). We should get the staged_block and continue without fetching a new block.
+  // If next_state is End or Index, we should fetch a new block.
+  if next_state != StagedState::End && next_state != StagedState::Index {
+    // Get the staged block and continue processing
+    if let Some(staged_block) = crate::index::mem_get_block() {
+      log!(
+        INFO,
+        "Continuing staged block processing at height {} with state {:?}",
+        height,
+        next_state
+      );
+      block = staged_block.block_data;
+    } else {
+      // This shouldn't happen - if next_state is not End, there should be a staged block
       log!(
         CRITICAL,
-        "failed to get_block: {:?} error: {:?}",
-        block_hash,
-        e
+        "next_state is {:?} but no staged block found at height {}",
+        next_state,
+        height
       );
-      return Ok(StagedState::End); // Assumed transient error, reschedule.
+      return Ok(StagedState::End);
     }
-  };
+  } else {
+    // next_state is End, meaning the previous block is fully processed.
+    // Proceed with fetching a new block.
 
-  // Step 3: Check for and handle blockchain reorganizations.
-  if let Err(e) = Reorg::detect_reorg(
-    network,
-    index_prev_blockhash,
-    block.header.prev_blockhash,
-    height,
-  )
-  .await
-  {
-    return match e {
-      reorg::Error::Recoverable { height, depth } => {
-        Reorg::handle_reorg(height, depth);
-        Ok(StagedState::End) // Reorg handled, reschedule.
-      }
-      reorg::Error::Unrecoverable => {
-        let msg = format!("unrecoverable reorg detected at height {}", height);
-        log!(CRITICAL, "{}", &msg);
-        Err(anyhow::anyhow!(msg))
-      }
-      reorg::Error::Retry => {
-        log!(INFO, "retry reorg detected at height {}", height);
-        Ok(StagedState::End) // Reschedule to retry.
+    // Step 1: Get the block hash for the given height.
+    let block_hash = match crate::bitcoin_api::get_block_hash(network, height).await {
+      Ok(Some(hash)) => hash,
+      Ok(None) => return Ok(StagedState::End), // No new block yet, reschedule for later.
+      Err(e) => {
+        let message = format!("failed to get_block_hash at height {}: {:?}", height, e);
+        // Log only new error messages to avoid spam.
+        let is_new_message = CRITICAL.with_borrow(|sink| {
+          sink
+            .iter()
+            .last()
+            .map_or(true, |entry| entry.message != message)
+        });
+        if is_new_message {
+          log!(CRITICAL, "{}", message);
+        }
+        return Ok(StagedState::End); // Assumed transient error, reschedule.
       }
     };
+
+    // Step 2: Fetch the full block data.
+    block = match crate::rpc::get_block(block_hash).await {
+      Ok(block) => block,
+      Err(e) => {
+        log!(
+          CRITICAL,
+          "failed to get_block: {:?} error: {:?}",
+          block_hash,
+          e
+        );
+        return Ok(StagedState::End); // Assumed transient error, reschedule.
+      }
+    };
+
+    // Step 3: Check for and handle blockchain reorganizations.
+    if let Err(e) = Reorg::detect_reorg(
+      network,
+      index_prev_blockhash,
+      block.header.prev_blockhash,
+      height,
+    )
+    .await
+    {
+      return match e {
+        reorg::Error::Recoverable { height, depth } => {
+          Reorg::handle_reorg(height, depth);
+          Ok(StagedState::End) // Reorg handled, reschedule.
+        }
+        reorg::Error::Unrecoverable => {
+          let msg = format!("unrecoverable reorg detected at height {}", height);
+          log!(CRITICAL, "{}", &msg);
+          Err(anyhow::anyhow!(msg))
+        }
+        reorg::Error::Retry => {
+          log!(INFO, "retry reorg detected at height {}", height);
+          Ok(StagedState::End) // Reschedule to retry.
+        }
+      };
+    }
   }
 
   // Step 4: Index the block's contents. This will propagate the error if it fails.
@@ -380,6 +412,7 @@ async fn index_block(
   }
 
   if state == StagedState::Cleanup {
+    log!(INFO, "clearing staged block");
     crate::index::mem_clear_block();
     crate::index::heap_reset_staged_block_vars();
     crate::index::mem_insert_block_header(height, block.header.store());
@@ -413,7 +446,7 @@ fn commit(
     if let Some(outpoint) = pending_outpoint {
       loop {
         let counter = ic_cdk::api::instruction_counter();
-        if counter > instruction_counter + 30_000_000_000 {
+        if counter > instruction_counter + 27_000_000_000 {
           let remaining_inscriptions: Vec<(u32, u64)> = pending_inscriptions_iter.collect();
 
           crate::index::heap_insert_staged_block_vars(StagedBlockVars {
@@ -459,7 +492,7 @@ fn commit(
       let mut inscriptions_iter = parsed_utxo_entry.parse_inscriptions().into_iter();
       loop {
         let counter = ic_cdk::api::instruction_counter();
-        if counter > instruction_counter + 30_000_000_000 {
+        if counter > instruction_counter + 27_000_000_000 {
           let pending_commit_inscriptions: Vec<(u32, u64)> = inscriptions_iter.collect();
           let pending_utxo_cache: BTreeMap<OutPoint, UtxoEntryBuf> = utxo_iter.collect();
 
@@ -601,8 +634,7 @@ fn index_utxo_entries(
               outpoint_removals.push((OutPoint::load(outpoint), entry.clone()));
               entry
             } else {
-              log!(
-                INFO,
+              ic_cdk::println!(
                 "outpoint not found {:?}",
                 OutPoint::load(outpoint).to_string()
               );
